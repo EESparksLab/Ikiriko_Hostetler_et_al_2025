@@ -18,25 +18,23 @@ library(rcompanion)
 citation("rcompanion")
 packageVersion("rcompanion")
 library(lubridate) #monthday
+citation("lubridate")
+packageVersion("lubridate")
+library(propagate)
+citation("propagate")
+packageVersion("propagate")
 R.version
 
 cat("\014")
 rm(list=ls()) 
 ls() 
-setwd(dir = "/Users/ashley/Desktop/BMMB/Data/")
+setwd(dir = "/Users/ashley/Documents/GitHub/Ikiriko_Hostetler_et_al_2025/R Input Files/")
 getwd()
+
 #Figure 1####
 data0 = read.csv("PusherDatabase_BMMB.csv", header = TRUE, na.strings = "NA")
 data=data0
-unique(data$Additional.Notes)
-data = subset(data, Experiment == "BMMB")
-data = subset(data, Accession == "B73" | Accession == "Mo17" | Accession == "CML258")
-data = subset(data, Year == "2021" | Year == "2023" | Year == "2024")
-data = subset(data, Plot.ID !="202" & Plot.ID !="203" & Plot.ID != "204"  & Plot.ID !="206"  & Plot.ID !="245"  & Plot.ID !="345"  & Plot.ID !="352"  & Plot.ID !="354"  & Plot.ID !="356") #These plots were removed because they were part of the "Tassling objective
-data$Plant.Number = replace(data$Plant.Number, data$Plant.Number == "1.1", "7")
-data$TempID = paste(data$Plot.ID, data$Plant.Number, data$Date, data$TimeOfTesting, sep = "_")
-data = subset(data, TempID != "964_5_9/27/21_12:22 PM") #This was a repeat save of Plant 4 without repeat testing
-data$TempID = NULL
+data = subset(data0, Experiment == "BMMB")
 data$Condition = paste(data$Year, data$Accession, sep = "_")
 data$ID = paste(data$Plot.ID, data$Plant.Number, data$Year, sep = "_")
 data = as.data.frame(data[,c(20, 21, 2, 5, 3, 7, 8, 15, 19)])
@@ -45,42 +43,40 @@ data$PlantingDate = data$Year
 data$PlantingDate = replace(data$PlantingDate, data$PlantingDate == "2021", "5/20/2021")
 data$PlantingDate = replace(data$PlantingDate, data$PlantingDate == "2023", "5/17/2023")
 data$PlantingDate = replace(data$PlantingDate, data$PlantingDate == "2024", "5/20/2024")
-data$PlantingDate <- as.Date(data$PlantingDate, format="%m/%d/%Y")
+data$PlantingDate = as.Date(data$PlantingDate, format="%m/%d/%Y")
 data$Date = as.Date(data$Date, format="%m/%d/%y")
 data$DAP = difftime(data$Date, data$PlantingDate, units = "days")
 data$DAP = as.numeric(data$DAP)
-head(data)
-X = data %>%
+X = data %>% #Testing DAP
   group_by(Condition) %>%
   summarise(unique_values = list(unique(DAP)))
 X = as.data.frame(X)
 X
 FullPusherDataFile = data
-counts = data %>%
+counts = data %>% #How many times each plant was tested
   group_by(ID) %>%
   summarise(count = n())
-summary_counts = counts %>%
+summary_counts = counts %>% #How plants were tested for each "grouping" interval
   group_by(count) %>%
   summarise(rows_with_count = n())
-summary_counts
 data = data %>%
   group_by(ID) %>%
-  filter(n_distinct(EI) > 5) %>%
+  filter(n_distinct(EI) > 5) %>% #Retaining only plants that were tested more than 5 times 
   ungroup()
-data$Accession <- factor(data$Accession, levels = c("B73","Mo17", "CML258"))
-data %>%
-  group_by(Year) %>%
+data$Accession = factor(data$Accession, levels = c("B73","Mo17","CML258"))
+data %>% #Determine the first and last testing date within each year and accession
+  group_by(Year, Accession) %>%
   summarize(
     First_Date = min(Date), 
     Last_Date = max(Date)
   )
-result = data %>%
+result = data %>% #Determine how many days are within each testing date
   distinct(Condition, Date, .keep_all = TRUE) %>%
   group_by(Condition) %>%
   arrange(DAP, .by_group = TRUE) %>%
   mutate(Diff_Days = DAP - lag(DAP)) %>%
   ungroup()
-result2 = result %>%
+result2 = result %>% #Determine the average number of days within each testing date
   group_by(Condition) %>%
   summarise(
     average_DAP = mean(Diff_Days, na.rm = TRUE),
@@ -88,10 +84,13 @@ result2 = result %>%
     min_DAP = min(Diff_Days, na.rm = TRUE),
     max_DAP = max(Diff_Days, na.rm = TRUE)
   )
-print(result2)
+plot_count = data %>% #Determine how many plots are tested within year Condition and DAP
+  group_by(Condition, DAP) %>%
+  summarise(n_plots = n_distinct(Plot.ID), .groups = "drop")
+
 PlotA = ggplot(data, aes(x=DAP, y=EI, color = Accession)) +
-  geom_line(aes(x=DAP, y=EI, group = ID, color = Accession), linewidth=0.25)+
-  geom_point(aes(x=DAP, y=EI), color="black", size=0.1)+
+  geom_line(aes(x=DAP, y=EI, group = ID, color = Accession), linewidth=0.50)+
+  geom_point(aes(x=DAP, y=EI), color="black", size=0.05)+
   ylab("Stalk Flexural Stiffness Nm2")+
   xlab("Days After Planting")+
   scale_color_manual(values = c("pink4", "slategray3", "mistyrose3"))+
@@ -107,66 +106,111 @@ PlotA = ggplot(data, aes(x=DAP, y=EI, color = Accession)) +
     axis.title.y = element_text(face="bold", size=10))+
   facet_grid(Year~Accession)
 PlotA
-results_df = data.frame() 
-for (i in unique(data$Condition)) { 
-  subset_data = data[which(data$Condition == i),]
-  model = nls(EI ~ SSlogis(DAP, Asym, xmid, scal), subset_data)
+
+results_df = data.frame()
+pred_df_all = data.frame()
+for (i in unique(data$Condition)) {
+  subset_data = data[data$Condition == i, ]
+  model = nls(EI ~ SSlogis(DAP, Asym, xmid, scal), data = subset_data)
+  # Predicted values
   subset_data$pred_EI = predict(model)
-  coeffs = coef(model) 
-  Asym = coeffs['Asym'] 
-  xmid = coeffs['xmid'] 
-  scal = coeffs['scal'] 
-  temp_df <- data.frame(
+  # Coefficients
+  coeffs = coef(model)
+  Asym = coeffs['Asym']
+  xmid = coeffs['xmid']
+  scal = coeffs['scal']
+  # Model fit metrics
+  rse = summary(model)$sigma
+  rss = sum(resid(model)^2)
+  tss = sum((subset_data$EI - mean(subset_data$EI))^2)
+  r_squared = 1 - (rss / tss)
+  aic = AIC(model)
+  # Store summary results
+  results_df = rbind(results_df, data.frame(
     Condition = i,
-    Year = subset_data$Year,
-    Accession = subset_data$Accession,
-    DAP = subset_data$DAP,
-    Pred_EI = subset_data$pred_EI,
+    Year = unique(subset_data$Year),
+    Accession = unique(subset_data$Accession),
     Asymp = Asym,
     Xmid = xmid,
-    scale = scal
+    scale = scal,
+    RSE = rse, 
+    RSS = rss,
+    TSS = tss,
+    R_squared = r_squared,
+    AIC = aic
+  ))
+  #Confidence Intervals
+  new_DAP = data.frame(DAP = sort(unique(subset_data$DAP)))
+  pred_ci = predictNLS(model, newdata = new_DAP, interval = "confidence", alpha = 0.05)
+  pred_out = data.frame(
+    DAP = new_DAP$DAP,
+    fit = pred_ci$summary[["Prop.Mean.1"]],
+    lwr = pred_ci$summary[["Prop.2.5%"]],
+    upr = pred_ci$summary[["Prop.97.5%"]],
+    Condition = i,
+    Accession = unique(subset_data$Accession),
+    Year = unique(subset_data$Year)
   )
-  temp_df = temp_df[!duplicated(temp_df$DAP), ]
-  results_df <- rbind(results_df, temp_df)
+pred_df_all = rbind(pred_df_all, pred_out)
 }
+head(results_df) #Full data frame with Asymp and Metrics
 results_df$ID = results_df$Condition
-results_df=results_df %>% separate(ID, c("Year", "Genotype"), "_")
-PlotB = ggplot(results_df, aes(x=DAP, color = Accession)) +
-  geom_point(aes(y = Pred_EI, group = Condition), color="black") +  # Regular points
-  geom_line(aes(y = Pred_EI, group = Condition, color = Accession)) +
-  geom_hline(data = results_df, aes(yintercept = Asymp, group = Condition), color = "black", linewidth=0.25) +  # Asymptote
-  scale_color_manual(values = c("pink4", "slategray3", "mistyrose3"))+
-  xlab("Days After Planting")+
-  ylab("")+
-  scale_y_continuous(limits=c(0,150), breaks=seq(0,150,25))+
-  theme_bw()+
+summary_df = results_df %>% separate(Condition, c("Year", "Genotype"), "_")
+head(summary_df)
+head(results_df)
+summary_df = summary_df[,c(1:3,7:11)]
+PlotB = ggplot() +
+  geom_line(data = pred_df_all, aes(x = DAP, y = fit, color = Accession, group = Condition), linewidth=1) +
+  geom_hline(data = results_df, aes(yintercept = Asymp, group = Condition), color = "black", linewidth=0.25) +
+  scale_color_manual(values = c("pink4", "slategray3", "mistyrose3")) +
+  scale_fill_manual(values = c("pink4", "slategray3", "mistyrose3")) +
+  xlab("Days After Planting") +
+  ylab("") +
+  scale_y_continuous(limits = c(0, 150), breaks = seq(0, 150, 25)) +
+  theme_bw() +
   theme(
     legend.position = "none", 
-    axis.text.x = element_text(size=10, angle = 60, hjust=1),
-    axis.text.y = element_text(size=10),
-    axis.text = element_text(size=10),
-    axis.title = element_text(face="bold", size=10),
-    axis.title.x = element_text(face="bold", size=10),
-    axis.title.y = element_text(face="bold", size=10))+
-  facet_grid(Year~Accession)
+    axis.text.x = element_text(size = 10, angle = 60, hjust = 1),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(face = "bold", size = 10)
+  ) +
+  facet_grid(Year ~ Accession)
 PlotB
+PlotS4A = ggplot() +
+  geom_ribbon(data = pred_df_all, aes(x = DAP, ymin = lwr, ymax = upr, fill = Accession, group = Condition), alpha = 0.3) +
+  geom_line(data = pred_df_all, aes(x = DAP, y = fit, color = Accession, group = Condition)) +
+  geom_hline(data = results_df, aes(yintercept = Asymp, group = Condition), color = "black", linewidth=0.25) +
+  scale_color_manual(values = c("pink4", "slategray3", "mistyrose3")) +
+  scale_fill_manual(values = c("pink4", "slategray3", "mistyrose3")) +
+  xlab("Days After Planting") +
+  ylab("") +
+  scale_y_continuous(limits = c(0, 150), breaks = seq(0, 150, 25)) +
+  theme_bw() +
+  theme(
+    legend.position = "none", 
+    axis.text.x = element_text(size = 10, angle = 60, hjust = 1),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(face = "bold", size = 10)
+  ) +
+  facet_grid(Year ~ Accession)
+PlotS4A
 result3 = results_df %>%
   group_by(Condition) %>%
   filter(!duplicated(Asymp)) %>%
   ungroup()
-result3 = result3[,c(1,2,5:9)]
+result3 = result3[,c(1:6)]
 result3$change = (result3$scale/4)*result3$Asymp
 result3
 PusherData = data
 ModelData = results_df
-rm(list = setdiff(ls(), c("PusherData", "ModelData","FullPusherDataFile","PlotA","PlotB")))
+ModelData2 = pred_df_all
+rm(list = setdiff(ls(), c("PusherData", "ModelData","ModelData2","FullPusherDataFile","PlotA","PlotB","PlotS4A")))
 #Pythium#
 data0 = read.csv("PusherDatabase_BMMB.csv", header = TRUE, na.strings = "NA")
 data=data0
 unique(data$Experiment)
 data = subset(data, Experiment == "Pythium")
 data$filename = data$Raw.Data.Label
-colnames(data)
 data = data[,c(1:17)]
 data$Additional.Notes = replace(data$Additional.Notes, data$Additional.Notes == "Pythium", "P")
 data$Additional.Notes = replace(data$Additional.Notes, data$Additional.Notes == "Control", "C")
@@ -174,6 +218,7 @@ data$Additional.Notes = replace(data$Additional.Notes, data$Additional.Notes == 
 data$Additional.Notes = replace(data$Additional.Notes, data$Additional.Notes == "p", "P")
 data$Additional.Notes = replace(data$Additional.Notes, data$Additional.Notes == "p'", "P")
 data$Treatment = data$Additional.Notes
+head(data)
 df = subset(data, Year == "2023")
 colnames(df)[7] = "Field"
 colnames(df)[8] = "Pair"
@@ -181,7 +226,7 @@ df$PlantingDate = df$Field
 df$PlantingDate = replace(df$PlantingDate, df$PlantingDate == "1", "4/20/2023")
 df$PlantingDate = replace(df$PlantingDate, df$PlantingDate == "2", "4/19/2023")
 df$PlantingDate = replace(df$PlantingDate, df$PlantingDate == "3", "4/18/2023")
-df$PlantingDate <- as.Date(df$PlantingDate, format="%m/%d/%Y")
+df$PlantingDate = as.Date(df$PlantingDate, format="%m/%d/%Y")
 df$Date = as.Date(df$Date, format="%m/%d/%y")
 df$DAP = difftime(df$Date, df$PlantingDate, units = "days")
 df$DAP = as.numeric(df$DAP)
@@ -192,6 +237,7 @@ X = as.data.frame(X)
 X
 data = df
 data$ID = paste(data$Field, data$Pair, data$Treatment, sep = "_")
+head(data)
 counts = data %>%
   group_by(ID) %>%
   summarise(count = n())
@@ -202,15 +248,24 @@ summary_counts
 X = df %>%
   group_by(Field, Pair) %>%
   summarise(unique_values = list(unique(DAP)))
+X = as.data.frame(X)
+X
 colnames(data)[15] = "EI"
 data = data %>%
   group_by(ID) %>%
   filter(n_distinct(EI) > 2) %>%
   ungroup()
 data = as.data.frame(data)
+sum = data %>%
+  group_by(Field, Treatment, DAP) %>%
+  summarise(
+    Mean = mean(EI, na.rm = TRUE),
+    SD = sd(EI, na.rm = TRUE),
+    .groups = "drop"
+  )
 PlotC= ggplot(data, aes(x=DAP, y=EI, color = Treatment)) +
-  geom_line(aes(x=DAP, y=EI, group = ID, color = Treatment), linewidth=0.25)+
-  geom_point(aes(x=DAP, y=EI), color="black", size=0.1)+
+  geom_line(aes(x=DAP, y=EI, group = ID, color = Treatment), linewidth=0.50)+
+  geom_point(aes(x=DAP, y=EI), color="black", size=0.05)+
   ylab("Stalk Flexural Stiffness Nm2")+
   xlab("Days After Planting")+
   scale_color_manual(values = c("indianred4", "burlywood"))+
@@ -226,38 +281,65 @@ PlotC= ggplot(data, aes(x=DAP, y=EI, color = Treatment)) +
     axis.title.y = element_text(face="bold", size=10))+
   facet_grid(.~Field)
 PlotC
-results_df = data.frame() 
-head(data)
 data$Condition = paste(data$Field, data$Treatment, sep = "_")
-for (i in unique(data$Condition)) { 
-  subset_data = data[which(data$Condition == i),]
-  model = nls(EI ~ SSlogis(DAP, Asym, xmid, scal), subset_data)
+results_df = data.frame()
+pred_df_all = data.frame()
+for (i in unique(data$Condition)) {
+  subset_data = data[data$Condition == i, ]
+  model = nls(EI ~ SSlogis(DAP, Asym, xmid, scal), data = subset_data)
+  # Predicted values
   subset_data$pred_EI = predict(model)
-  coeffs = coef(model) 
-  Asym = coeffs['Asym'] 
-  xmid = coeffs['xmid'] 
-  scal = coeffs['scal'] 
-  temp_df <- data.frame(
+  # Coefficients
+  coeffs = coef(model)
+  Asym = coeffs['Asym']
+  xmid = coeffs['xmid']
+  scal = coeffs['scal']
+  # Model fit metrics
+  rse = summary(model)$sigma
+  rss = sum(resid(model)^2)
+  tss = sum((subset_data$EI - mean(subset_data$EI))^2)
+  r_squared = 1 - (rss / tss)
+  aic = AIC(model)
+  # Store summary results
+  results_df = rbind(results_df, data.frame(
     Condition = i,
     Treatment = subset_data$Treatment, 
     Field = subset_data$Field,
     DAP = subset_data$DAP,
-    Pred_EI = subset_data$pred_EI,
     Asymp = Asym,
     Xmid = xmid,
-    scale = scal
+    scale = scal,
+    RSE = rse, 
+    RSS = rss,
+    TSS = tss,
+    R_squared = r_squared,
+    AIC = aic
+  ))
+  #Confidence Intervals
+  new_DAP = data.frame(DAP = sort(unique(subset_data$DAP)))
+  pred_ci = predictNLS(model, newdata = new_DAP, interval = "confidence", alpha = 0.05)
+  pred_out = data.frame(
+    DAP = new_DAP$DAP,
+    fit = pred_ci$summary[["Prop.Mean.1"]],
+    lwr = pred_ci$summary[["Prop.2.5%"]],
+    upr = pred_ci$summary[["Prop.97.5%"]],
+    Condition = i,
+    Treatment = unique(subset_data$Treatment), 
+    Field = unique(subset_data$Field)
   )
-  temp_df = temp_df[!duplicated(temp_df$DAP), ]
-  results_df <- rbind(results_df, temp_df)
+  pred_df_all = rbind(pred_df_all, pred_out)
 }
+head(results_df) #Full data frame with Asymp and Metrics
 results_df$ID = results_df$Condition
-PlotD = ggplot(results_df, aes(x=DAP, color = Treatment)) +
-  geom_point(aes(y = Pred_EI, group = Treatment), color="black") +  # Regular points
-  geom_line(aes(y = Pred_EI, group = Treatment, color = Treatment)) +
-  geom_hline(data = results_df, aes(yintercept = Asymp, group = Treatment), color = "black", linewidth=0.25) +  # Asymptote
-  scale_color_manual(values = c("indianred4", "burlywood"))+
-  xlab("Days After Planting")+
-  ylab("")+
+summary_df = results_df %>% separate(Condition, c("Field", "Treatment"), "_")
+summary_df = summary_df[,c(1:3,7:11)]
+PlotD = ggplot() +
+  geom_line(data = pred_df_all, aes(x = DAP, y = fit, color = Treatment, group = Condition)) +
+  geom_hline(data = results_df, aes(yintercept = Asymp, group = Condition), color = "black", linewidth=0.25) +
+  scale_color_manual(values = c("indianred4", "burlywood")) +
+  scale_fill_manual(values = c("indianred4", "burlywood")) +
+  xlab("Days After Planting") +
+  ylab("") +
   scale_y_continuous(limits=c(0,50), breaks=seq(0,50,10))+
   theme_bw()+
   theme(
@@ -270,6 +352,27 @@ PlotD = ggplot(results_df, aes(x=DAP, color = Treatment)) +
     axis.title.y = element_text(face="bold", size=10))+
   facet_grid(.~Field)
 PlotD
+pred_df_all$lwr[pred_df_all$lwr < 0] = 0
+PlotS4B = ggplot() +
+  geom_ribbon(data = pred_df_all, aes(x = DAP, ymin = lwr, ymax = upr, fill = Treatment, group = Condition), alpha = 0.3) +
+  geom_line(data = pred_df_all, aes(x = DAP, y = fit, color = Treatment, group = Condition)) +
+  geom_hline(data = results_df, aes(yintercept = Asymp, group = Condition), color = "black", linewidth=0.25) +
+  scale_color_manual(values = c("indianred4", "burlywood")) +
+  scale_fill_manual(values = c("indianred4", "burlywood")) +
+  xlab("Days After Planting") +
+  ylab("") +
+  scale_y_continuous(limits=c(0,50), breaks=seq(0,50,10))+
+  theme_bw()+
+  theme(
+    legend.position = "none", 
+    axis.text.x = element_text(size=10, angle = 60, hjust=1),
+    axis.text.y = element_text(size=10),
+    axis.text = element_text(size=10),
+    axis.title = element_text(face="bold", size=10),
+    axis.title.x = element_text(face="bold", size=10),
+    axis.title.y = element_text(face="bold", size=10))+
+  facet_grid(.~Field)
+PlotS4A
 result3 = results_df %>%
   group_by(Condition) %>%
   filter(!duplicated(Asymp)) %>%
@@ -277,6 +380,7 @@ result3 = results_df %>%
 result3
 result3$change = (result3$scale/4)*result3$Asymp
 result3
+#pdf(file="/Users/ashley/Desktop/BMMB/Submission2/Figure1.pdf", width=8, height=6)
 ggdraw() +
   draw_plot(PlotA, x = 0, y = 0.3, width = 0.5, height = 0.70) +
   draw_plot(PlotB, x = 0.5, y = 0.3, width = 0.5, height = 0.70) +
@@ -286,9 +390,20 @@ ggdraw() +
                   size = 12,
                   x = c(0,0.5,0,0.5), 
                   y = c(1,1,0.3,0.3))
+#dev.off()
+#pdf(file="/Users/ashley/Desktop/BMMB/Submission2/FigureS4.pdf", width=8, height=6)
+ggdraw() +
+  draw_plot(PlotS4A, x = 0, y = 0.3, width = 1, height = 0.70) +
+  draw_plot(PlotS4B, x = 0, y = 0, width = 1, height = 0.30) +
+  draw_plot_label(label = c("A", "B"), 
+                  size = 10,
+                  x = c(0,0), 
+                  y = c(1,0.3))
+#dev.off()
 PythiumPusherData = data
 PythiumModelData = results_df
-rm(list = setdiff(ls(), c("PusherData", "ModelData","FullPusherDataFile","PythiumPusherData","PythiumModelData")))
+PythiumModelData2 = pred_df_all
+rm(list = setdiff(ls(), c("PusherData", "ModelData","ModelData2","FullPusherDataFile","PythiumPusherData","PythiumModelData", "PythiumModelData2")))
 #Supplemental Figure 1####
 df1 = read.csv("GDD_2021.csv", header = TRUE, na.strings = "NA")
 df2 = read.csv("GDD_2023.csv", header = TRUE, na.strings = "NA")
@@ -331,6 +446,9 @@ df1 = data.frame(
   Year = c("2021", "2023", "2023", "2023", "2024", "2024", "2024"),
   Accession = c("CML258", "Mo17", "CML258", "B73", "Mo17", "CML258", "B73")
 )
+data %>%
+  group_by(Year) %>%
+  summarise(avg_daily_gdd = mean(Daily.DD, na.rm = TRUE))
 PlotA = ggplot(data, aes(x=month_day, y=Cumulative, color = Year)) +
   geom_line(aes(x=month_day, y=Cumulative, group = Year, color = Year))+
   geom_point(aes(x=month_day, y=Cumulative, group = Year, color = Year, shape = Accession), color="black", size=1)+
@@ -349,33 +467,25 @@ PlotA = ggplot(data, aes(x=month_day, y=Cumulative, color = Year)) +
     axis.title.x = element_text(face="bold", size=10),
     axis.title.y = element_text(face="bold", size=10))
 PlotA
-result = data %>%
-  group_by(Year) %>%
-  mutate(
-    first_date = min(Date),
-    last_date = max(Date)
-  ) %>%
-  filter(Date >= first_date & Date <= last_date) %>%
-  summarize(
-    avg_DD = mean(Daily.DD, na.rm = TRUE)
-  )
-head(data)
 GDD = data
-rm(list = setdiff(ls(), c("PusherData", "ModelData","FullPusherDataFile","PythiumPusherData","PythiumModelData","GDD","PlotA","df1")))
-results_df = ModelData
+rm(list = setdiff(ls(), c("PusherData", "ModelData","ModelData2","FullPusherDataFile","PythiumPusherData","PythiumModelData","PythiumModelData2","GDD","PlotA","df1")))
+results_df = ModelData2
+results_df
 results_df$PlantingDate = results_df$Year
 results_df$PlantingDate = replace(results_df$PlantingDate, results_df$PlantingDate == "2021", "5/20/2021")
 results_df$PlantingDate = replace(results_df$PlantingDate, results_df$PlantingDate == "2023", "5/17/2023")
 results_df$PlantingDate = replace(results_df$PlantingDate, results_df$PlantingDate == "2024", "5/20/2024")
 results_df$PlantingDate <- as.Date(results_df$PlantingDate, format="%m/%d/%Y")
+
 results_df$Date = results_df$PlantingDate + results_df$DAP
 GDD = GDD[,c(1,2,4)]
 results_df = merge(results_df, GDD, by = c("Date","Year"))
 results_df$Accession = factor(results_df$Accession, levels = c("B73","Mo17", "CML258"))
 df1$Accession = factor(df1$Accession, levels = c("B73","Mo17", "CML258"))
+results_df = merge(results_df, ModelData, by = c("Condition", "Accession", "Year"))
 PlotB = ggplot(results_df) +
-  geom_point(aes(x=Cumulative, y = Pred_EI, group = Condition), color="black") +  # Regular points
-  geom_line(aes(x=Cumulative, y = Pred_EI, group = Condition, color=Accession)) +
+  geom_point(aes(x=Cumulative, y = fit, group = Condition), color="black") +  # Regular points
+  geom_line(aes(x=Cumulative, y = fit, group = Condition, color=Accession)) +
   geom_hline(data = results_df, aes(yintercept = Asymp, group = Condition), color = "black", linewidth=0.25) +  # Asymptote
   geom_vline(data = df1, aes(xintercept = Cumulative, group = Condition), color = "black", linewidth=0.25) +  # Asymptote
   scale_color_manual(values = c("pink4", "slategray3", "burlywood", "black"))+
@@ -383,6 +493,7 @@ PlotB = ggplot(results_df) +
   ylab("")+
   ggtitle("B")+
   scale_y_continuous(limits=c(0,150), breaks=seq(0,150,25))+
+  scale_x_continuous(limits=c(1250,3250), breaks=seq(1250,3250,200))+
   theme_bw()+
   theme(
     axis.text.x = element_text(size=10, angle = 60, hjust=1),
@@ -393,7 +504,7 @@ PlotB = ggplot(results_df) +
     axis.title.y = element_text(face="bold", size=10))+
   facet_grid(Year~Accession, drop = TRUE)
 PlotB
-rm(list = setdiff(ls(), c("PusherData", "ModelData","FullPusherDataFile","PythiumPusherData","PythiumModelData")))
+rm(list = setdiff(ls(), c("PusherData", "ModelData","ModelData2","FullPusherDataFile","PythiumPusherData","PythiumModelData","PythiumModelData2")))
 
 #Supplemental Figure 3####
 data = FullPusherDataFile
@@ -415,7 +526,6 @@ Weekly$Treatment = "Weekly"
 Weekly = subset(Weekly, Condition != "2024_CML258")
 Weekly = subset(Weekly, Year != "2024")
 Weekly_sorted = Weekly[order(Weekly$Year, Weekly$Plot.ID, Weekly$Plant.Number), ]
-unique(Weekly_sorted$Plot.ID)
 result = Control %>%
   group_by(Plot.ID, Plant.Number, Accession, Year) %>%
   summarise(RowCount = n(), .groups = "drop")
@@ -434,6 +544,7 @@ Control = semi_join(Control, Weekly, by = "Plot.ID")
 Control_sorted = Control[order(Control$Year, Control$Plot.ID, Control$Plant.Number), ]
 data = rbind(Weekly, Control)
 data$Accession = factor(data$Accession, levels = c("B73","Mo17", "CML258"))
+#pdf(file="/Users/ashley/Desktop/BMMB/Submission1/FigureS3.pdf", width=8, height=6)
 ggplot(data, aes(x=Treatment, y=EI, fill = Treatment)) +
   geom_boxplot() +
   ylab("Stalk Flexural Stiffness Nm2")+
@@ -449,6 +560,7 @@ ggplot(data, aes(x=Treatment, y=EI, fill = Treatment)) +
     axis.title.x = element_text(face="bold", size=10),
     axis.title.y = element_text(face="bold", size=10))+
   facet_wrap(~ Condition, nrow = 2, ncol = 2)
+#dev.off()
 #Set up data frame to fill in
 SW <- matrix(NA,nrow=2,ncol=2)
 rownames(SW) <- c("W","pvalue")
@@ -541,10 +653,13 @@ for (i in condition){
                 row.names = FALSE, col.names = FALSE, append=TRUE)
   }
 }
-rm(list = setdiff(ls(), c("PusherData", "ModelData","FullPusherDataFile","PythiumPusherData","PythiumModelData")))
+rm(list = setdiff(ls(), c("PusherData", "ModelData","ModelData2","FullPusherDataFile","PythiumPusherData","PythiumModelData","PythiumModelData2")))
 #Figure 2####
 data0 = read.csv("PhenotypesDatabase_BMMB.csv", header = TRUE, na.strings = "NA")
 data=data0
+head(data)
+unique(data$CollectionDate)
+data$CollectionDate = as.Date(data$CollectionDate, format = "%m/%d/%y")
 data = subset(data, Accession == "B73" | Accession == "Mo17" | Accession == "CML258")
 data = subset(data, Year == "2021" | Year == "2023" | Year == "2024")
 data = subset(data, Treatment !="PT" & Treatment !="ER" & Treatment !="DT" )
@@ -556,14 +671,18 @@ data = data[,c(1,3,7:12,32)]
 data$Condition = paste(data$Year, data$Accession, sep = "_")
 data$ID = paste(data$Plot, data$Plant, data$Year, sep = "_")
 data$PlantingDate = data$Year
+head(data)
+unique(data$PlantingDate)
 data$PlantingDate = replace(data$PlantingDate, data$PlantingDate == "2021", "5/20/2021")
 data$PlantingDate = replace(data$PlantingDate, data$PlantingDate == "2023", "5/17/2023")
 data$PlantingDate = replace(data$PlantingDate, data$PlantingDate == "2024", "5/20/2024")
-data$PlantingDate <- as.Date(data$PlantingDate, format="%m/%d/%Y")
-data$CollectionDate = as.Date(data$CollectionDate, format="%m/%d/%Y")
+data$PlantingDate = as.Date(data$PlantingDate, format="%m/%d/%Y")
+head(data)
+unique(data$CollectionDate)
 data$CollectionDate = replace(data$CollectionDate, data$CollectionDate == "2024-01-10", "2024-10-01")
 data$DAP = difftime(data$CollectionDate, data$PlantingDate, units = "days")
 data$DAP = as.numeric(data$DAP)
+unique(data$DAP)
 counts = data %>%
   group_by(ID) %>%
   summarise(count = n())
@@ -596,7 +715,7 @@ PlotA = ggplot(data, aes(x=DAP, y=StalkDiameter, color = Accession)) +
   facet_grid(Year~Accession)
 PlotA
 df = data
-rm(list = setdiff(ls(), c("PusherData", "ModelData","FullPusherDataFile","PythiumPusherData","PythiumModelData","df", "PlotA")))
+rm(list = setdiff(ls(), c("PusherData", "ModelData","ModelData2","FullPusherDataFile","PythiumPusherData","PythiumModelData","PythiumModelData2","df", "PlotA")))
 df = as.data.frame(df)
 df = as.data.frame(df)
 colnames(df)[3] = "Date"
@@ -628,16 +747,16 @@ PlotB = ggplot(data, aes(x=DAP, y=RatioSD, color = Accession)) +
     axis.title.y = element_text(face="bold", size=10))+
   facet_grid(Year~Accession)
 PlotB
-rm(list = setdiff(ls(), c("PusherData", "ModelData","FullPusherDataFile","PythiumPusherData","PythiumModelData","df", "PlotA","PlotB")))
+rm(list = setdiff(ls(), c("PusherData", "ModelData","ModelData2","FullPusherDataFile","PythiumPusherData","PythiumModelData","PythiumModelData2","df", "PlotA","PlotB")))
 #Pythium#
 data0 = read.csv("Pythium_Diameters_2023.csv", header = TRUE, na.strings = "NA")
 data=data0
 df1 = data[,c(1:8)]
 df1 = df1 %>%
   pivot_longer(
-    cols = July.4:Aug.28,       # Select the columns to reshape
-    names_to = "Date",                 # Name of the new key column
-    values_to = "Diameter"                # Name of the new value column
+    cols = July.4:Aug.28,       
+    names_to = "Date",             
+    values_to = "Diameter"              
   )
 df1 = as.data.frame(df1)
 df1$Date = replace(df1$Date, df1$Date == "July.4", "07/04/2023")
@@ -653,7 +772,7 @@ colnames(df1)[1] = "ID"
 df1$ID = gsub("-", "_", df1$ID)
 data = merge(PythiumPusherData, df1, by = c("ID", "Date"), all = TRUE)
 PythiumPusherData = data
-rm(list = setdiff(ls(), c("PusherData", "ModelData","FullPusherDataFile","PythiumPusherData","PythiumModelData","df", "PlotA","PlotB")))
+rm(list = setdiff(ls(), c("PusherData", "ModelData","ModelData2","FullPusherDataFile","PythiumPusherData","PythiumModelData","PythiumModelData2","df", "PlotA","PlotB")))
 data0 = read.csv("Pythium_Phenotype_2023.csv", header = TRUE, na.strings = "NA")
 data=data0
 data = within(data, {
@@ -725,7 +844,7 @@ ggdraw() +
                   size = 12,
                   x = c(0,0.5,0,0.5), 
                   y = c(1,1,0.3,0.3))
-rm(list = setdiff(ls(), c("PusherData", "ModelData","FullPusherDataFile","PythiumPusherData","PythiumModelData")))
+rm(list = setdiff(ls(), c("PusherData", "ModelData","ModelData2","FullPusherDataFile","PythiumPusherData","PythiumModelData","PythiumModelData2")))
 #Figure 3 and S4####
 data0 = read.csv("InstronDatabase_BMMB.csv", header = TRUE, na.strings = "NA")
 data=data0
@@ -744,10 +863,10 @@ data$I = (pi/4)*(((data$a0)^3)*(data$b0))
 data$E = data$K * ((200^3)/(48*(data$I)))
 data$PlantingDate = data$Year
 data$PlantingDate = replace(data$PlantingDate, data$PlantingDate == "2024", "5/20/2024")
-data$PlantingDate <- as.Date(data$PlantingDate, format="%m/%d/%Y")
+data$PlantingDate = as.Date(data$PlantingDate, format="%m/%d/%Y")
 data$DAP = difftime(data$TestingDate, data$PlantingDate, units = "days")
 data$DAP = as.numeric(data$DAP)
-data$Genotype <- factor(data$Genotype, levels = c("B73","Mo17", "CML258"))
+data$Genotype = factor(data$Genotype, levels = c("B73","Mo17", "CML258"))
 data$DAP2 = data$DAP
 data$DAP2 =  as.numeric(as.character(data$DAP2))
 head(data)
@@ -765,10 +884,10 @@ data = data %>%
   ))
 head(data)
 colnames(data)[5] = "Accession"
-df = ModelData
+df = ModelData2
 df = subset(df, Year == "2024")
 PlotB= ggplot() +
-  geom_line(data = df, aes(x = DAP, y = Pred_EI*20, group = Accession), color = "gray80") +
+  geom_line(data = df, aes(x = DAP, y = fit*20, group = Accession), color = "gray80") +
   geom_boxplot(data = data, aes(x = DAP2, y = E, group = DAP2, fill = Accession))+
   scale_fill_manual(values = c("pink4", "slategray3", "burlywood"))+
   xlab("Days After Planting")+
@@ -786,7 +905,7 @@ PlotB= ggplot() +
   facet_grid(~Accession)
 PlotB
 PlotA = ggplot() +
-  geom_line(data = df, aes(x = DAP, y = Pred_EI, group = Accession), color = "gray80") +
+  geom_line(data = df, aes(x = DAP, y = fit, group = Accession), color = "gray80") +
   geom_boxplot(data = data, aes(x = DAP2, y = K, group = DAP2, fill = Accession))+
   scale_fill_manual(values = c("pink4", "slategray3", "burlywood"))+
   xlab("Days After Planting")+
@@ -810,7 +929,7 @@ ggdraw() +
                   size = 12,
                   x = c(0,0), 
                   y = c(1,0.5))
-FigureS4 = ggplot() +
+FigureS6 = ggplot() +
   geom_boxplot(data = data, aes(x = DAP2, y = I, group = DAP2, fill = Accession))+
   scale_fill_manual(values = c("pink4", "slategray3", "burlywood"))+
   xlab("Days After Planting")+
@@ -825,14 +944,14 @@ FigureS4 = ggplot() +
     axis.title.x = element_text(face="bold", size=10),
     axis.title.y = element_text(face="bold", size=10))+
   facet_grid(~Accession)
-FigureS4
+FigureS6
 
 attach(data)
 head(data)
-lm_x <- lm(I ~ DAP2*Accession)
+lm_x = lm(I ~ DAP2*Accession)
 anova(lm_x)
 lm_x_aov=aov(lm_x) 
-HSD.test(lm_x_aov, trt = c("Accession","DAP2"), console = TRUE)
+HSD.test(lm_x_aov, trt = c("DAP2","Accession"), console = TRUE)
 par(mfrow=c(2,2))
 plot(lm_x)
 par(mfrow=c(2,1))
@@ -862,3 +981,4 @@ shapiro.test(x=resid)
 HSD.test(lm_x2_aov2, trt = c("Accession","DAP2"), console = TRUE)
 data$tukey = NULL
 detach(data)
+
