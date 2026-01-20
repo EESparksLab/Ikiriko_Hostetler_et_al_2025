@@ -9,4 +9,4 @@ Supplementary Data (Folder): All supplementary figures (.pdf) and videos (.MP4) 
 
 Raw Data (Folder): All raw data files generated during data collection are included here. 
 
-Please e-mail braceroots@gmail.com with any questions or concerns.
+Please e-mail ashleyhostetler@missouri.edu with any questions or concerns.
